@@ -18,6 +18,9 @@ import threading
 from datetime import datetime
 from dotenv import load_dotenv
 
+# Add src directory to Python path for imports to work
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+
 # Load environment variables
 load_dotenv()
 

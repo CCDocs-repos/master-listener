@@ -2,6 +2,7 @@ from dotenv import load_dotenv
 load_dotenv()
 
 import os
+import sys
 import logging
 import json
 from datetime import datetime, timedelta
@@ -14,6 +15,9 @@ from slack_sdk.errors import SlackApiError
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
+
+# Add src directory to Python path for imports to work
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
 
 # Import multi-bot architecture components
 from config.multi_bot_config import MultiBotConfigManager
