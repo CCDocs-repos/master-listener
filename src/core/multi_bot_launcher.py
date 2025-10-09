@@ -64,9 +64,9 @@ def run_bot_process(bot_id, bot_token, app_token, bot_name):
         logger.info(f"   • App Token: {app_token[:12]}...")
         logger.info(f"   • Process ID: {os.getpid()}")
 
-        # Import and run the listener
+        # Import and run the Redis-based listener (enqueue-only)
         sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-        from core import listener
+        from core import listener_redis as listener
 
         # Run the main function
         listener.main()
@@ -79,6 +79,36 @@ def run_bot_process(bot_id, bot_token, app_token, bot_name):
         traceback.print_exc()
     finally:
         logger.info(f"[END] {bot_name} stopped")
+
+
+def run_worker_process():
+    """Run a single forwarder worker that consumes Redis jobs and posts to Slack"""
+    try:
+        # Configure logging for worker process
+        logging.basicConfig(
+            level=logging.INFO,
+            format='%(asctime)s - %(name)s - [ForwarderWorker] - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        logger = logging.getLogger(__name__)
+
+        logger.info("[START] Starting Forwarder Worker process...")
+        logger.info(f"   • Process ID: {os.getpid()}")
+
+        # Import and run the forwarder worker
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+        from core import forwarder_worker
+
+        forwarder_worker.main()
+
+    except KeyboardInterrupt:
+        logger.info("[STOP] Forwarder Worker interrupted by user")
+    except Exception as e:
+        logger.error(f"[ERROR] Error in Forwarder Worker: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        logger.info("[END] Forwarder Worker stopped")
 
 
 class BotRunner:
@@ -128,6 +158,7 @@ class MultiBotLauncher:
         self.multi_bot_manager = MultiBotConfigManager()
         self.bot_runners = {}
         self.running = False
+        self.worker_process = None
         
         logger.info("[BOT] Multi-Bot Launcher initialized")
         logger.info(f"   • Total bots configured: {len(self.multi_bot_manager.bot_configs)}")
@@ -136,14 +167,35 @@ class MultiBotLauncher:
         for bot_id, bot_config in self.multi_bot_manager.bot_configs.items():
             self.bot_runners[bot_id] = BotRunner(bot_id, bot_config)
 
+    def start_worker(self, worker_count: int = 1):
+        """Start the forwarder worker(s) in separate process(es)"""
+        if self.worker_process and self.worker_process.is_alive():
+            logger.info("[OK] Forwarder Worker already running")
+            return
+        # For now, start a single worker; can be extended to multiple if needed
+        self.worker_process = multiprocessing.Process(
+            target=run_worker_process,
+            name="ForwarderWorker",
+            daemon=False
+        )
+        self.worker_process.start()
+        logger.info(f"[OK] Forwarder Worker process started (PID: {self.worker_process.pid})")
+
     def start_all_bots(self):
-        """Start all configured bots"""
-        logger.info("[START] Starting all bots...")
+        """Start forwarder worker then all configured bots"""
+        logger.info("[START] Starting forwarder worker and all bots...")
         logger.info("=" * 60)
 
         self.running = True
 
-        # Start each bot in its own thread
+        # Start the worker first so it can consume jobs immediately
+        try:
+            worker_count = int(os.environ.get("FORWARDER_WORKER_COUNT", "1"))
+        except Exception:
+            worker_count = 1
+        self.start_worker(worker_count=worker_count)
+
+        # Start each bot in its own process
         for bot_id, bot_runner in self.bot_runners.items():
             try:
                 bot_runner.start()
@@ -152,7 +204,7 @@ class MultiBotLauncher:
                 logger.error(f"[ERROR] Failed to start Bot-{bot_id}: {e}")
 
         logger.info("=" * 60)
-        logger.info("[OK] All bots started!")
+        logger.info("[OK] Forwarder worker and all bots started!")
         
         # Log the assignment distribution
         self.multi_bot_manager.log_assignment_stats()
@@ -174,6 +226,15 @@ class MultiBotLauncher:
                             time.sleep(5)  # Give it time to start
                         except Exception as e:
                             logger.error(f"[ERROR] Failed to restart Bot-{bot_id}: {e}")
+
+                # Check worker health
+                if self.worker_process and not self.worker_process.is_alive() and self.running:
+                    logger.warning("[WARN] Forwarder Worker appears to have stopped. Attempting restart...")
+                    try:
+                        self.start_worker()
+                        time.sleep(5)
+                    except Exception as e:
+                        logger.error(f"[ERROR] Failed to restart Forwarder Worker: {e}")
 
                 # Sleep for 30 seconds before next health check
                 time.sleep(30)
@@ -197,6 +258,12 @@ class MultiBotLauncher:
                 logger.info(f"[STOP] Terminating Bot-{bot_id}...")
                 bot_runner.terminate()
 
+        # Terminate worker
+        if self.worker_process and self.worker_process.is_alive():
+            logger.info("[STOP] Terminating Forwarder Worker...")
+            self.worker_process.terminate()
+            self.worker_process.join(timeout=5)
+
         # Wait for all bots to finish (with timeout)
         for bot_id, bot_runner in self.bot_runners.items():
             logger.info(f"[WAIT] Waiting for Bot-{bot_id} to stop...")
@@ -207,7 +274,13 @@ class MultiBotLauncher:
             else:
                 logger.info(f"[OK] Bot-{bot_id} stopped")
 
-        logger.info("[END] All bots stopped")
+        # Confirm worker stop
+        if self.worker_process and self.worker_process.is_alive():
+            logger.warning("[WARN] Forwarder Worker did not stop gracefully")
+        else:
+            logger.info("[OK] Forwarder Worker stopped")
+
+        logger.info("[END] All bots and worker stopped")
     
     def run(self):
         """Run the multi-bot system"""
