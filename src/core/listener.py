@@ -5,6 +5,7 @@ import os
 import sys
 import logging
 import json
+import hashlib
 from datetime import datetime, timedelta
 import pytz
 import threading
@@ -87,8 +88,9 @@ IGNORED_CHANNEL_NAMES = [
 ]
 
 # Duplicate detection cache (stores message keys: "msg_id:channel_id")
-# Uses client_msg_id (unique per message) with channel_id
-# Messages are kept for 5 minutes to prevent duplicate processing
+# Primary: client_msg_id (Slack's unique message identifier)
+# Fallback: MD5 hash of channel:user:text (deterministic, never uses timestamp)
+# Messages are kept for 5 minutes to prevent duplicate processing across bot instances
 processed_messages_cache = {}
 cache_lock = threading.Lock()
 
@@ -846,13 +848,16 @@ def handle_message(event, say):
     try:
         channel_id = event["channel"]
 
-        # FIRST-COME-FIRST-SERVE: Any bot can process, message ID-based deduplication
-        # Extract message ID (client_msg_id is unique per message, ts as fallback)
-        msg_id = event.get("client_msg_id") or event.get("ts", "")
-        message_key = f"{msg_id}:{channel_id}"
+        # FIRST-COME-FIRST-SERVE: Message ID-based deduplication
+        # Priority: client_msg_id (unique) > fallback to event hash (never use timestamp alone)
+        msg_id = event.get("client_msg_id")
+        if not msg_id:
+            # Fallback: Create deterministic hash from event content
+            event_signature = f"{channel_id}:{event.get('user', 'bot')}:{event.get('text', '')[:50]}"
+            msg_id = hashlib.md5(event_signature.encode()).hexdigest()[:16]
+            logger.debug(f"[{current_bot_config.name}] Generated fallback ID: {msg_id}")
         
-        # Log the message ID for debugging
-        logger.info(f"[{current_bot_config.name}] 📩 Received message - Channel: {channel_id}, Message ID: {msg_id}, Key: {message_key}")
+        message_key = f"{msg_id}:{channel_id}"
         
         # Check for duplicate processing (prevents multiple bots from handling same message)
         with cache_lock:
@@ -865,13 +870,13 @@ def handle_message(event, say):
             
             # Check if already processed
             if message_key in processed_messages_cache:
-                logger.info(f"[{current_bot_config.name}] ⏭️ DUPLICATE - Message {message_key} already processed by another bot")
+                logger.info(f"[{current_bot_config.name}] ⏭️ DUPLICATE detected: {msg_id}")
                 return
             
             # Mark as processed IMMEDIATELY (claim ownership)
             processed_messages_cache[message_key] = current_time
         
-        logger.info(f"[{current_bot_config.name}] 🏃 FIRST-RESPONDER - Processing message {message_key}")
+        logger.info(f"[{current_bot_config.name}] ✅ Processing message: {msg_id}")
 
         try:
             channel_info = client.conversations_info(channel=channel_id)["channel"]
@@ -941,13 +946,16 @@ def handle_message_edit(event, say):
         channel_id = event["channel"]
         timestamp = edited_message["ts"]
         
-        # FIRST-COME-FIRST-SERVE: Any bot can process, message ID-based deduplication
-        # Extract message ID from edited message
-        msg_id = edited_message.get("client_msg_id") or timestamp
-        message_key = f"{msg_id}:{channel_id}:edit"
+        # FIRST-COME-FIRST-SERVE: Message ID-based deduplication for edits
+        # Priority: client_msg_id (unique) > fallback to event hash (never use timestamp alone)
+        msg_id = edited_message.get("client_msg_id")
+        if not msg_id:
+            # Fallback: Create deterministic hash from event content
+            event_signature = f"{channel_id}:{edited_message.get('user', 'bot')}:{edited_message.get('text', '')[:50]}"
+            msg_id = hashlib.md5(event_signature.encode()).hexdigest()[:16]
+            logger.debug(f"[{current_bot_config.name}] Generated fallback ID for edit: {msg_id}")
         
-        # Log the edit message ID for debugging
-        logger.info(f"[{current_bot_config.name}] 📝 Received edit - Channel: {channel_id}, Message ID: {msg_id}, Key: {message_key}")
+        message_key = f"{msg_id}:{channel_id}:edit"
         
         # Check for duplicate processing
         with cache_lock:
@@ -955,13 +963,13 @@ def handle_message_edit(event, say):
             
             # Check if already processed
             if message_key in processed_messages_cache:
-                logger.info(f"[{current_bot_config.name}] ⏭️ DUPLICATE - Edit {message_key} already processed by another bot")
+                logger.info(f"[{current_bot_config.name}] ⏭️ DUPLICATE edit detected: {msg_id}")
                 return
             
             # Mark as processed IMMEDIATELY (claim ownership)
             processed_messages_cache[message_key] = current_time
         
-        logger.info(f"[{current_bot_config.name}] 🏃 FIRST-RESPONDER - Processing edit {message_key}")
+        logger.info(f"[{current_bot_config.name}] ✏️ Processing edit: {msg_id}")
 
         try:
             channel_info = client.conversations_info(channel=channel_id)["channel"]
