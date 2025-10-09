@@ -232,6 +232,7 @@ class BotChannelInviter:
                 
                 # Show progress every 20 channels
                 if i % 20 == 0 or i == len(channels_to_invite):
+                    pass  # Progress logging removed for cleaner output
                 
                 # Invite bot to channel
                 success = self.invite_bot_to_channel(channel_id, user_id, bot_name, channel_name)

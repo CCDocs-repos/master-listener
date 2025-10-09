@@ -68,11 +68,13 @@ def run_bot_process(bot_id, bot_token, app_token, bot_name):
         listener.main()
 
     except KeyboardInterrupt:
+        pass  # Clean shutdown on Ctrl+C
     except Exception as e:
         logger.error(f"[ERROR] Error in {bot_name}: {e}")
         import traceback
         traceback.print_exc()
     finally:
+        pass
 
 
 def run_worker_process():
@@ -95,11 +97,13 @@ def run_worker_process():
         forwarder_worker.main()
 
     except KeyboardInterrupt:
+        pass  # Clean shutdown on Ctrl+C
     except Exception as e:
         logger.error(f"[ERROR] Error in Forwarder Worker: {e}")
         import traceback
         traceback.print_exc()
     finally:
+        pass
 
 
 class BotRunner:
@@ -155,6 +159,103 @@ class MultiBotLauncher:
         # Create bot runners for each configured bot
         for bot_id, bot_config in self.multi_bot_manager.bot_configs.items():
             self.bot_runners[bot_id] = BotRunner(bot_id, bot_config)
+    
+    def check_missing_channels(self):
+        """Check for missing/inaccessible channels at startup"""
+        print("\n" + "=" * 80)
+        print("CHECKING FOR MISSING/INACCESSIBLE CHANNELS")
+        print("=" * 80)
+        
+        try:
+            # Get all the channel IDs that have been causing errors
+            problem_channels = {
+                'C086XJBA1MG': 'Unknown',
+                'C0774AP1R5M': 'Unknown', 
+                'C09K7TJ2K39': 'Unknown',
+                'C0875D2QHMJ': 'Unknown',
+                'C07BEB1RANB': 'Unknown',
+                'C09B32K3JGN': 'Unknown',
+                'C093RUL2N3C': 'Unknown',
+                'C07HY03NX4N': 'Unknown',
+                'C08PNJCKDV1': 'Unknown'
+            }
+            
+            # Check each problematic channel with Bot 1's token
+            bot_token = os.environ.get("SLACK_BOT_TOKEN")
+            if bot_token:
+                headers = {
+                    "Authorization": f"Bearer {bot_token}",
+                    "Content-Type": "application/json"
+                }
+                
+                import requests
+                for channel_id in problem_channels.keys():
+                    try:
+                        response = requests.get(
+                            "https://slack.com/api/conversations.info",
+                            headers=headers,
+                            params={"channel": channel_id}
+                        )
+                        data = response.json()
+                        
+                        if not data.get("ok"):
+                            error = data.get("error", "unknown_error")
+                            logger.warning(f"MISSING CHANNEL: {channel_id} - Error: {error}")
+                            print(f"  ❌ {channel_id}: {error}")
+                        else:
+                            channel = data.get("channel", {})
+                            if channel.get("is_archived"):
+                                logger.warning(f"ARCHIVED CHANNEL: {channel_id} - #{channel.get('name', 'unknown')}")
+                                print(f"  📦 {channel_id}: #{channel.get('name', 'unknown')} (archived)")
+                    except Exception as e:
+                        logger.warning(f"Could not check {channel_id}: {e}")
+                        
+            # Now check all assigned channels
+            logger.info("Running comprehensive channel check...")
+            
+            # Set environment variable for auto-cleanup
+            os.environ["AUTO_CLEANUP"] = "true"
+            
+            # Import and run the checker
+            sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..', '..', 'scripts'))
+            from check_missing_channels import MissingChannelChecker
+            
+            checker = MissingChannelChecker()
+            results = checker.check_missing_channels()
+            
+            if results:
+                summary = results["summary"]
+                if summary["missing_count"] > 0:
+                    logger.warning(f"Found {summary['missing_count']} total missing/inaccessible channels")
+                    print(f"\n📊 SUMMARY: {summary['missing_count']} channels not found")
+                    
+                    # Log ALL missing channel IDs clearly
+                    print("\nMISSING CHANNELS LIST:")
+                    for channel_id, info in results["missing"].items():
+                        name = info.get("historical_name", "Unknown")
+                        error = info['error']
+                        print(f"  {channel_id} - #{name} - {error}")
+                        logger.warning(f"Missing channel will be removed: {channel_id} (#{name})")
+                    
+                    # Auto-remove missing channels
+                    checker.remove_missing_channels(results)
+                    
+                    # Reload channel assignments
+                    self.multi_bot_manager.load_channel_assignments()
+                    logger.info("Channel assignments updated - removed missing channels")
+                    
+                if summary["archived_count"] > 0:
+                    logger.warning(f"Found {summary['archived_count']} archived channels (removed)")
+                    
+                logger.info(f"Active channels: {summary['active_count']}/{summary['total_assigned']}")
+                
+            print("=" * 80 + "\n")
+                
+        except Exception as e:
+            logger.error(f"Error checking missing channels: {e}")
+            import traceback
+            traceback.print_exc()
+            # Continue anyway - this is not critical
 
     def start_worker(self, worker_count: int = 1):
         """Start the forwarder worker(s) in separate process(es)"""
@@ -171,6 +272,9 @@ class MultiBotLauncher:
     def start_all_bots(self):
         """Start forwarder worker then all configured bots"""
         logger.info("Starting forwarder worker and bots...")
+        
+        # Check for missing channels first
+        self.check_missing_channels()
 
         self.running = True
 
@@ -251,11 +355,13 @@ class MultiBotLauncher:
             if bot_runner.is_alive():
                 logger.warning(f"Bot-{bot_id} did not stop gracefully")
             else:
+                pass  # Bot stopped gracefully
 
         # Confirm worker stop
         if self.worker_process and self.worker_process.is_alive():
             logger.warning("Forwarder Worker did not stop gracefully")
         else:
+            pass  # Worker stopped gracefully
 
     
     def run(self):
@@ -294,6 +400,7 @@ class MultiBotLauncher:
                 time.sleep(60)  # Status update every minute
 
         except KeyboardInterrupt:
+            pass  # Clean shutdown on Ctrl+C
         except Exception as e:
             logger.error(f"[ERROR] Error in multi-bot system: {e}")
             logger.exception("Full error details:")
