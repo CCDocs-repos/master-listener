@@ -19,6 +19,7 @@ load_dotenv()
 import os
 import sys
 import json
+import hashlib
 import logging
 import time
 import threading
@@ -319,21 +320,23 @@ def handle_message(event, body, say):
         channel_id = event["channel"]
 
         # FCFS cross-bot claim using Redis to avoid duplicate processing
-        message_identifier = event.get("client_msg_id") or body.get("event_id", "")
+        # Priority: client_msg_id (unique) > fallback to content hash (never use timestamp)
+        message_identifier = event.get("client_msg_id")
+        if not message_identifier:
+            # Fallback: Create deterministic hash from event content
+            event_signature = f"{channel_id}:{event.get('user', 'bot')}:{event.get('text', '')[:50]}"
+            message_identifier = hashlib.md5(event_signature.encode()).hexdigest()[:16]
+        
         message_key = build_fcfs_key("message", channel_id, message_identifier)
         if not try_fcfs_claim(message_key, message_identifier):
-            logger.debug(f"[{current_bot_config.name}] ⏭️ DUPLICATE - Message {message_key} already claimed")
-            return
+            return  # Duplicate - already claimed by another bot
 
         try:
             channel_info = client.conversations_info(channel=channel_id)["channel"]
             channel_name = channel_info["name"]
 
-            if channel_name in IGNORED_CHANNEL_NAMES:
-                logger.info(f"IGNORING message from explicitly ignored channel: {channel_name}")
-                return
-            if channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
-                logger.info(f"IGNORING message from categorized ignored channel: {channel_name}")
+            # Skip ignored channels
+            if channel_name in IGNORED_CHANNEL_NAMES or channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
                 return
 
             # For apptbk: forward all (including bots). Else: ignore bot messages.
@@ -342,16 +345,15 @@ def handle_message(event, body, say):
 
             category = classify_channel(channel_name)
             if not category:
-                logger.info(f"Ignoring message from non-target or unknown admin channel: {channel_name}")
-                return
+                return  # Non-target or unknown admin channel
 
             target_channel = resolve_target_channel(category)
             if not target_channel:
-                logger.error(f"Target channel not set for category {category}; cannot enqueue")
+                logger.error(f"Target channel not set for category {category}")
                 return
 
         except SlackApiError as e:
-            logger.error(f"Error getting channel info: {e.response['error']}")
+            logger.error(f"Channel error [{channel_id}]: {e.response['error']}")
             return
 
         text = event.get("text", "")
@@ -383,9 +385,9 @@ def handle_message(event, body, say):
         if msg_id:
             logger.info(f"ENQUEUED message -> stream={STREAM_JOBS} id={msg_id} cat={category} src=#{channel_name}")
         else:
-            logger.error("Failed to enqueue message job")
+            logger.error(f"Failed to enqueue message from #{channel_name}")
     except Exception as e:
-        logger.error(f"Error handling message (enqueue): {str(e)}")
+        logger.error(f"Error handling message: {str(e)}")
 
 
 @app.event("message_changed")
@@ -396,38 +398,38 @@ def handle_message_edit(event, body, say):
         timestamp = edited_message["ts"]
 
         # FCFS claim for edits
-        edit_identifier = edited_message.get("client_msg_id") or body.get("event_id", "")
+        # Priority: client_msg_id (unique) > fallback to content hash (never use timestamp)
+        edit_identifier = edited_message.get("client_msg_id")
+        if not edit_identifier:
+            # Fallback: Create deterministic hash from event content
+            event_signature = f"{channel_id}:{edited_message.get('user', 'bot')}:{edited_message.get('text', '')[:50]}"
+            edit_identifier = hashlib.md5(event_signature.encode()).hexdigest()[:16]
+        
         edit_key = build_fcfs_key("message_changed", channel_id, edit_identifier)
         if not try_fcfs_claim(edit_key, edit_identifier):
-            logger.debug(f"[{current_bot_config.name}] ⏭️ DUPLICATE - Edit {edit_key} already claimed")
-            return
+            return  # Duplicate edit - already claimed
 
         try:
             channel_info = client.conversations_info(channel=channel_id)["channel"]
             channel_name = channel_info["name"]
 
-            if channel_name in IGNORED_CHANNEL_NAMES:
-                logger.info(f"IGNORING edit from explicitly ignored channel: {channel_name}")
-                return
-            if channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
-                logger.info(f"IGNORING edit from categorized ignored channel: {channel_name}")
+            # Skip ignored channels
+            if channel_name in IGNORED_CHANNEL_NAMES or channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
                 return
 
             if "bot_id" in edited_message and not channel_name.endswith("-apptbk"):
-                logger.info(f"Ignoring bot edit in non-apptbk channel: {channel_name}")
                 return
 
             category = classify_channel(channel_name)
             if not category:
-                logger.info(f"Ignoring edit from non-target or unknown admin channel: {channel_name}")
-                return
+                return  # Non-target or unknown admin channel
 
             target_channel = resolve_target_channel(category)
             if not target_channel:
-                logger.error(f"Target channel not set for category {category}; cannot enqueue edit")
+                logger.error(f"Target channel not set for category {category}")
                 return
         except SlackApiError as e:
-            logger.error(f"Error getting channel info for edit: {e.response['error']}")
+            logger.error(f"Channel error [{channel_id}]: {e.response['error']}")
             return
 
         user = edited_message.get("user") or edited_message.get("bot_id", "unknown")
@@ -449,9 +451,9 @@ def handle_message_edit(event, body, say):
         if msg_id:
             logger.info(f"ENQUEUED edit -> stream={STREAM_JOBS} id={msg_id} cat={category} src=#{channel_name}")
         else:
-            logger.error("Failed to enqueue edit job")
+            logger.error(f"Failed to enqueue edit from #{channel_name}")
     except Exception as e:
-        logger.error(f"Error handling message edit (enqueue): {str(e)}")
+        logger.error(f"Error handling message edit: {str(e)}")
 
 
 # ----------------------------------------------------------------------------
