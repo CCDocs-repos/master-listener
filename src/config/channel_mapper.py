@@ -161,7 +161,7 @@ class ChannelMapper:
                             task_details = response.json()
                             subtasks = task_details.get("subtasks", [])
                     except Exception as e:
-                        print(f"    ❌ Error getting subtasks for {task_name}: {e}")
+                        print(f"Error getting subtasks for {task_name}: {e}")
                         subtasks = []
                     
                     for subtask in subtasks:
@@ -172,18 +172,18 @@ class ChannelMapper:
                             if cleaned_name:  # Only add if name isn't empty after cleaning
                                 client_lists[category].append(cleaned_name)
                     
-                    print(f"    ✅ Found {len(client_lists[category])} clients")
+                    print(f"Found {len(client_lists[category])} clients")
             
             total_clients = sum(len(clients) for clients in client_lists.values())
-            print(f"✅ Total ClickUp clients fetched: {total_clients}")
-            print(f"   • Fractional: {len(client_lists['managed_clients_fractionals'])}")
-            print(f"   • Full: {len(client_lists['managed_clients_full'])}")
-            print(f"   • Storm: {len(client_lists['storm_clients'])}")
+            print(f"Total ClickUp clients fetched: {total_clients}")
+            print(f"Fractional: {len(client_lists['managed_clients_fractionals'])}")
+            print(f"Full: {len(client_lists['managed_clients_full'])}")
+            print(f"Storm: {len(client_lists['storm_clients'])}")
             
             return client_lists
             
         except Exception as e:
-            print(f"❌ Error fetching ClickUp clients: {e}")
+            print(f"Error fetching ClickUp clients: {e}")
             return {}
 
     def fetch_slack_channels(self):
@@ -241,11 +241,11 @@ class ChannelMapper:
                         "num_members": channel.get("num_members", 0)
                     })
             
-            print(f"✅ Total Slack admin channels found: {len(admin_channels)}")
+            print(f"Total Slack admin channels found: {len(admin_channels)}")
             return admin_channels
             
         except Exception as e:
-            print(f"❌ Error fetching Slack channels: {e}")
+            print(f"Error fetching Slack channels: {e}")
             return []
 
     def normalize_name_for_matching(self, name):
@@ -301,8 +301,8 @@ class ChannelMapper:
 
     def map_clients_to_channels(self, clickup_clients, slack_channels):
         """Map managed clients to Slack channels, all others go to storm"""
-        print("🔗 Mapping managed clients to Slack channels...")
-        print("⛈️  All other admin channels will be categorized as storm")
+        print("Mapping managed clients to Slack channels...")
+        print("All other admin channels will be categorized as storm")
         
         mappings = {
             "managed_channels": [],
@@ -320,7 +320,7 @@ class ChannelMapper:
         used_channels = set()
         
         # Map managed clients only
-        print("  🎯 Mapping managed clients (full + fractionals)...")
+        print("Mapping managed clients (full + fractionals)...")
         for client_name in all_managed_clients:
             best_match = None
             best_score = 0.0
@@ -346,16 +346,16 @@ class ChannelMapper:
                     "confidence": best_score
                 })
                 used_channels.add(best_match["name"])
-                print(f"    ✅ {client_name} → {best_match['name']} (confidence: {best_score:.2f})")
+                print(f"{client_name} → {best_match['name']} (confidence: {best_score:.2f})")
             else:
                 mappings["unmapped_clickup_clients"].append({
                     "name": client_name,
                     "type": "managed"
                 })
-                print(f"    ❌ No match found for managed client: {client_name}")
+                print(f" No match found for managed client: {client_name}")
         
         # All remaining channels go to storm (much simpler!)
-        print("  ⛈️  Assigning all remaining admin channels to storm...")
+        print("Assigning all remaining admin channels to storm...")
         storm_count = 0
         for channel in slack_channels:
             if channel["name"] not in used_channels:
@@ -366,19 +366,19 @@ class ChannelMapper:
                 })
                 storm_count += 1
         
-        print(f"    ✅ {storm_count} channels auto-assigned to storm")
+        print(f"{storm_count} channels auto-assigned to storm")
         
-        print(f"✅ Mapping complete:")
-        print(f"   • Managed mappings: {len(mappings['managed_channels'])}")
-        print(f"   • Storm channels: {len(mappings['storm_channels'])}")
-        print(f"   • Unmapped managed clients: {len(mappings['unmapped_clickup_clients'])}")
-        print(f"   • Total channels processed: {len(slack_channels)}")
+        print(f"Mapping complete:")
+        print(f"Managed mappings: {len(mappings['managed_channels'])}")
+        print(f"Storm channels: {len(mappings['storm_channels'])}")
+        print(f"Unmapped managed clients: {len(mappings['unmapped_clickup_clients'])}")
+        print(f"Total channels processed: {len(slack_channels)}")
         
         return mappings
 
     def update_channel_lists(self, mappings):
         """Update channel_lists.json with new mappings"""
-        print("📝 Updating channel_lists.json...")
+        print("Updating channel_lists.json...")
         
         channel_lists = {
             "managed_channels": [mapping["slack_channel"]["name"] for mapping in mappings["managed_channels"]],
@@ -400,14 +400,14 @@ class ChannelMapper:
         with open('data/channel_lists.json', 'w') as f:
             json.dump(channel_lists, f, indent=2)
         
-        print(f"✅ channel_lists.json updated:")
-        print(f"   • Managed channels: {len(channel_lists['managed_channels'])}")
-        print(f"   • Storm channels: {len(channel_lists['storm_channels'])}")
-        print(f"   • Ignored channels: {len(channel_lists['ignored_channels'])}")
+        print(f"channel_lists.json updated:")
+        print(f"Managed channels: {len(channel_lists['managed_channels'])}")
+        print(f"Storm channels: {len(channel_lists['storm_channels'])}")
+        print(f"Ignored channels: {len(channel_lists['ignored_channels'])}")
 
     def save_detailed_mapping(self, mappings, clickup_clients):
         """Save detailed mapping to final_client_mapping.json"""
-        print("💾 Saving detailed mapping...")
+        print("Saving detailed mapping...")
         
         # Calculate managed clients total
         managed_total = (
@@ -440,18 +440,18 @@ class ChannelMapper:
         with open('data/final_client_mapping.json', 'w') as f:
             json.dump(detailed_mapping, f, indent=2)
         
-        print("✅ Detailed mapping saved to final_client_mapping.json")
+        print("Detailed mapping saved to final_client_mapping.json")
 
     def run_full_mapping(self):
         """Run the complete mapping process"""
-        print("🚀 Starting complete channel mapping process...")
+        print("Starting complete channel mapping process...")
         print("=" * 60)
         
         try:
             # Step 1: Fetch ClickUp clients
             clickup_clients = self.fetch_clickup_clients()
             if not clickup_clients:
-                print("❌ Failed to fetch ClickUp clients")
+                print("Failed to fetch ClickUp clients")
                 return False
             
             print()
@@ -459,7 +459,7 @@ class ChannelMapper:
             # Step 2: Fetch Slack channels
             slack_channels = self.fetch_slack_channels()
             if not slack_channels:
-                print("❌ Failed to fetch Slack channels")
+                print("Failed to fetch Slack channels")
                 return False
             
             print()
@@ -484,17 +484,17 @@ class ChannelMapper:
             return True
             
         except Exception as e:
-            print(f"❌ Error in mapping process: {e}")
+            print(f"Error in mapping process: {e}")
             return False
 
 def main():
     """Main execution"""
     if not os.environ.get("CLICKUP_API_TOKEN"):
-        print("❌ Error: CLICKUP_API_TOKEN environment variable not set")
+        print("Error: CLICKUP_API_TOKEN environment variable not set")
         return
     
     if not os.environ.get("SLACK_BOT_TOKEN"):
-        print("❌ Error: SLACK_BOT_TOKEN environment variable not set")
+        print("Error: SLACK_BOT_TOKEN environment variable not set")
         return
     
     try:
@@ -502,12 +502,12 @@ def main():
         success = mapper.run_full_mapping()
         
         if success:
-            print("\n✅ All systems updated! The listener will automatically reload the new channel categorizations.")
+            print("\n All systems updated! The listener will automatically reload the new channel categorizations.")
         else:
-            print("\n❌ Mapping process failed. Please check the errors above.")
+            print("\n Mapping process failed. Please check the errors above.")
             
     except Exception as e:
-        print(f"❌ Fatal error: {e}")
+        print(f"Fatal error: {e}")
 
 if __name__ == "__main__":
     main()
