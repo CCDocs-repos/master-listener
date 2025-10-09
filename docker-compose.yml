@@ -8,4 +8,30 @@ services:
     env_file:
       - .env
     volumes:
-      - ./logs:/app/logs 
+      - ./logs:/app/logs
+      - ./data:/app/data
+    environment:
+      - PYTHONUNBUFFERED=1
+    depends_on:
+      - redis
+    networks:
+      - bot-network
+  
+  redis:
+    image: redis:7-alpine
+    container_name: master-listener-redis
+    restart: always
+    command: redis-server --appendonly yes
+    volumes:
+      - redis-data:/data
+    ports:
+      - "6379:6379"
+    networks:
+      - bot-network
+
+volumes:
+  redis-data:
+
+networks:
+  bot-network:
+    driver: bridge 
