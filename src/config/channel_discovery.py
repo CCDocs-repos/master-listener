@@ -47,7 +47,6 @@ class ChannelDiscoveryManager:
         Returns:
             List of channel dictionaries with metadata
         """
-        logger.info("🔍 Discovering all Slack channels...")
         
         all_channels = []
         cursor = None
@@ -73,24 +72,23 @@ class ChannelDiscoveryManager:
                 data = response.json()
                 
                 if not data["ok"]:
-                    logger.error(f"❌ Slack API error: {data.get('error')}")
+                    logger.error(f"Slack API error: {data.get('error')}")
                     break
                 
                 # Add channels to our list
                 channels = data["channels"]
                 all_channels.extend(channels)
-                logger.info(f"   📋 Discovered {len(channels)} channels (total: {len(all_channels)})")
                 
                 # Check for more pages
                 cursor = data.get("response_metadata", {}).get("next_cursor")
                 if not cursor:
                     break
             
-            logger.info(f"✅ Channel discovery complete: {len(all_channels)} total channels")
+            logger.info(f"Discovered {len(all_channels)} channels")
             return all_channels
             
         except Exception as e:
-            logger.error(f"❌ Error discovering channels: {e}")
+            logger.error(f"Error discovering channels: {e}")
             return []
     
     def filter_admin_channels(self, channels: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -103,7 +101,6 @@ class ChannelDiscoveryManager:
         Returns:
             List of admin channels only
         """
-        logger.info("🎯 Filtering for admin channels...")
         
         admin_channels = []
         
@@ -123,8 +120,7 @@ class ChannelDiscoveryManager:
         # Filter out archived channels
         active_admin_channels = [ch for ch in admin_channels if not ch["is_archived"]]
         
-        logger.info(f"✅ Found {len(active_admin_channels)} active admin channels")
-        logger.info(f"   (Filtered out {len(admin_channels) - len(active_admin_channels)} archived channels)")
+        logger.info(f"Found {len(active_admin_channels)} active admin channels")
         
         return active_admin_channels
     
@@ -138,7 +134,6 @@ class ChannelDiscoveryManager:
         Returns:
             Dictionary mapping bot_id -> list of channel_ids
         """
-        logger.info("🎯 Assigning admin channels to bots...")
         
         # Extract channel IDs
         channel_ids = [channel["id"] for channel in admin_channels]
@@ -165,10 +160,9 @@ class ChannelDiscoveryManager:
             with open("data/discovered_channels.json", "w") as f:
                 json.dump(channel_details, f, indent=2)
             
-            logger.info(f"💾 Saved details for {len(admin_channels)} channels to discovered_channels.json")
             
         except Exception as e:
-            logger.error(f"❌ Error saving channel details: {e}")
+            logger.error(f"Error saving channel details: {e}")
     
     def invite_bots_to_channels(self):
         """
@@ -176,7 +170,7 @@ class ChannelDiscoveryManager:
         Runs the bot invitation script automatically
         """
         try:
-            logger.info("🤖 Inviting bots to their assigned channels...")
+            logger.info("Inviting bots to channels...")
             
             # Import the bot invitation module
             script_path = os.path.join(os.path.dirname(__file__), '..', '..', 'scripts')
@@ -193,23 +187,22 @@ class ChannelDiscoveryManager:
                     # Log summary
                     total_successful = sum(r["successful_invitations"] for r in results.values())
                     total_already_in = sum(r["already_in_channel"] for r in results.values())
-                    logger.info(f"✅ Bot invitation complete:")
-                    logger.info(f"   • Already in: {total_already_in} channels")
-                    logger.info(f"   • New invitations: {total_successful}")
+                    if total_successful > 0:
+                        logger.info(f"Invited to {total_successful} new channels")
                     
                     # Save results
                     inviter.save_invitation_results(results)
                     return True
                 else:
-                    logger.warning("⚠️ No invitation results returned")
+                    logger.warning("No invitation results returned")
                     return False
                     
             except ImportError as e:
-                logger.error(f"❌ Could not import bot_channel_inviter: {e}")
+                logger.error(f"Could not import bot_channel_inviter: {e}")
                 return False
                 
         except Exception as e:
-            logger.error(f"❌ Error inviting bots to channels: {e}")
+            logger.error(f"Error inviting bots to channels: {e}")
             return False
     
     def run_full_discovery(self, auto_invite: bool = True) -> Dict[int, List[str]]:
@@ -222,20 +215,19 @@ class ChannelDiscoveryManager:
         Returns:
             Dictionary mapping bot_id -> list of assigned channel_ids
         """
-        logger.info("🚀 Starting full channel discovery and assignment...")
-        logger.info("=" * 60)
+        logger.info("Starting channel discovery...")
         
         try:
             # Step 1: Discover all channels
             all_channels = self.discover_all_channels()
             if not all_channels:
-                logger.error("❌ No channels discovered")
+                logger.error("No channels discovered")
                 return {}
             
             # Step 2: Filter for admin channels
             admin_channels = self.filter_admin_channels(all_channels)
             if not admin_channels:
-                logger.error("❌ No admin channels found")
+                logger.error("No admin channels found")
                 return {}
             
             # Step 3: Assign channels to bots (only NEW channels)
@@ -243,19 +235,14 @@ class ChannelDiscoveryManager:
             
             # Step 4: Automatically invite bots to their assigned channels
             if auto_invite:
-                logger.info("=" * 60)
-                logger.info("🤖 Auto-inviting bots to their assigned channels...")
                 self.invite_bots_to_channels()
             
-            # Step 5: Log results
-            logger.info("=" * 60)
-            logger.info("🎉 Channel discovery and assignment complete!")
             self.multi_bot_manager.log_assignment_stats()
             
             return assignments
             
         except Exception as e:
-            logger.error(f"❌ Error in channel discovery: {e}")
+            logger.error(f"Error in channel discovery: {e}")
             return {}
 
 def main():
@@ -278,7 +265,7 @@ def main():
                 print(f"Bot-{bot_id}: {len(channel_ids)} channels")
         
     except Exception as e:
-        logger.error(f"❌ Error: {e}")
+        logger.error(f"Error: {e}")
 
 if __name__ == "__main__":
     main()
