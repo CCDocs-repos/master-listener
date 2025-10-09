@@ -36,7 +36,10 @@ class MultiBotConfigManager:
         self.bot_configs: Dict[int, BotConfig] = {}
         self.current_bot_id: Optional[int] = None
         self.channel_assignments: Dict[str, int] = {}
-        self.assignment_file = "data/channel_assignment.json"
+        
+        # Get absolute path to project root (src/config -> ../..)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        self.assignment_file = os.path.join(project_root, "data", "channel_assignment.json")
         
         self._load_bot_configs()
         self._load_channel_assignments()
