@@ -851,6 +851,7 @@ def handle_message(event, say):
         channel_id = event["channel"]
 
         # FIRST-COME-FIRST-SERVE: Message ID-based deduplication
+        # Priority: client_msg_id (unique) > fallback to event hash (never use timestamp alone)
         msg_id = event.get("client_msg_id")
         if not msg_id:
             # Fallback: Create deterministic hash from event content
@@ -946,6 +947,7 @@ def handle_message_edit(event, say):
         timestamp = edited_message["ts"]
         
         # FIRST-COME-FIRST-SERVE: Message ID-based deduplication for edits
+        # Priority: client_msg_id (unique) > fallback to event hash (never use timestamp alone)
         msg_id = edited_message.get("client_msg_id")
         if not msg_id:
             # Fallback: Create deterministic hash from event content
