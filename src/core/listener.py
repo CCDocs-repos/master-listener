@@ -28,17 +28,21 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Initialize multi-bot configuration
+# NOTE: This is initialized AFTER BOT_ID environment variable is set by multi_bot_launcher
 multi_bot_manager = MultiBotConfigManager()
 current_bot_config = multi_bot_manager.get_current_bot_config()
 
 # Initialize Slack clients with current bot's tokens
-client = WebClient(token=current_bot_config.bot_token)
-app = App(token=current_bot_config.bot_token)
+# Use the tokens from the environment variables set by multi_bot_launcher
+client = WebClient(token=os.environ.get("SLACK_BOT_TOKEN", current_bot_config.bot_token))
+app = App(token=os.environ.get("SLACK_BOT_TOKEN", current_bot_config.bot_token))
 
 logger.info(f"🤖 Multi-bot configuration:")
 logger.info(f"   • Total bots: {len(multi_bot_manager.bot_configs)}")
 logger.info(f"   • This bot ID: {current_bot_config.bot_id}")
 logger.info(f"   • Bot name: {current_bot_config.name}")
+logger.info(f"   • Bot Token (from env): {os.environ.get('SLACK_BOT_TOKEN', 'NOT SET')[:12]}...")
+logger.info(f"   • App Token (from env): {os.environ.get('SLACK_APP_TOKEN', 'NOT SET')[:12]}...")
 logger.info(f"   • Assigned channels: {len(multi_bot_manager.get_current_bot_channels())}")
 
 # Master channel IDs
@@ -72,7 +76,20 @@ def load_channel_categorizations():
 CHANNEL_CATEGORIZATIONS = load_channel_categorizations()
 
 # Channels to ignore - these are the channel names to ignore completely
-IGNORED_CHANNEL_NAMES = ["ccdocs-agents", "ccdocs-admin", "ccdocs-apptbk"]
+IGNORED_CHANNEL_NAMES = [
+    "ccdocs-agents", 
+    "ccdocs-admin", 
+    "ccdocs-apptbk",
+    "ccdocs-dialer",
+    "building-universal-agents",
+    "master-agent", 
+    "master-admin-storm"
+]
+
+# Duplicate detection cache (stores message keys: "channel_id:timestamp")
+# Messages are kept for 5 minutes to prevent duplicate processing
+processed_messages_cache = {}
+cache_lock = threading.Lock()
 
 def update_client_lists():
     """Update client lists, channel mappings, and bot assignments"""
@@ -272,6 +289,10 @@ def forward_managed_admin_message(channel_id, text, user, timestamp, message_ts=
             return
             
         # Check if channel should be ignored
+        if channel_name in IGNORED_CHANNEL_NAMES:
+            logger.info(f"Ignoring message from explicitly ignored channel: {channel_name}")
+            return
+            
         if channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
             logger.info(f"Ignoring message from ignored managed admin channel: {channel_name}")
             return
@@ -405,6 +426,10 @@ def forward_storm_admin_message(channel_id, text, user, timestamp, message_ts=No
             return
             
         # Check if channel should be ignored
+        if channel_name in IGNORED_CHANNEL_NAMES:
+            logger.info(f"Ignoring message from explicitly ignored channel: {channel_name}")
+            return
+            
         if channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
             logger.info(f"Ignoring message from ignored storm admin channel: {channel_name}")
             return
@@ -534,6 +559,10 @@ def forward_agent_message(channel_id, text, user, timestamp, message_ts=None, th
             return
             
         # Check if channel should be ignored
+        if channel_name in IGNORED_CHANNEL_NAMES:
+            logger.info(f"Ignoring message from explicitly ignored channel: {channel_name}")
+            return
+            
         if channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
             logger.info(f"Ignoring message from ignored agent channel: {channel_name}")
             return
@@ -663,6 +692,10 @@ def forward_apptbk_message(channel_id, text, user, timestamp, message_ts=None, t
             return
             
         # Check if channel should be ignored
+        if channel_name in IGNORED_CHANNEL_NAMES:
+            logger.info(f"Ignoring message from explicitly ignored channel: {channel_name}")
+            return
+            
         if channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
             logger.info(f"Ignoring message from ignored apptbk channel: {channel_name}")
             return
@@ -812,10 +845,28 @@ def handle_message(event, say):
     try:
         channel_id = event["channel"]
 
-        # Check if this channel is assigned to the current bot
-        if not multi_bot_manager.is_channel_assigned_to_current_bot(channel_id):
-            logger.debug(f"⏭️ Ignoring message from channel {channel_id} - not assigned to {current_bot_config.name}")
-            return
+        # FIRST-COME-FIRST-SERVE: Any bot can process, timestamp-based deduplication
+        timestamp = event.get("ts", "")
+        message_key = f"{channel_id}:{timestamp}"
+        
+        # Check for duplicate processing (prevents multiple bots from handling same message)
+        with cache_lock:
+            current_time = time.time()
+            
+            # Clean old entries (older than 5 minutes)
+            expired_keys = [k for k, v in processed_messages_cache.items() if current_time - v > 300]
+            for k in expired_keys:
+                del processed_messages_cache[k]
+            
+            # Check if already processed
+            if message_key in processed_messages_cache:
+                logger.debug(f"[{current_bot_config.name}] ⏭️ DUPLICATE - Message {message_key} already processed by another bot")
+                return
+            
+            # Mark as processed IMMEDIATELY (claim ownership)
+            processed_messages_cache[message_key] = current_time
+        
+        logger.info(f"[{current_bot_config.name}] 🏃 FIRST-RESPONDER - Processing message from channel {channel_id}")
 
         try:
             channel_info = client.conversations_info(channel=channel_id)["channel"]
@@ -831,18 +882,15 @@ def handle_message(event, say):
                 logger.info(f"IGNORING message from categorized ignored channel: {channel_name}")
                 return
 
-            # For apptbk channels, forward ALL messages (bots and non-bots)
-            if channel_name.endswith("-apptbk"):
-                pass  # Process all apptbk messages
             # Ignore bot messages in non-apptbk channels
-            elif "bot_id" in event:
+            if "bot_id" in event and not channel_name.endswith("-apptbk"):
                 return
 
             # Only process messages from channels ending with specific suffixes
             if not (channel_name.endswith("-admin") or
+                   channel_name.endswith("-admins") or
                    channel_name.endswith("-agent") or
                    channel_name.endswith("-agents") or
-                   channel_name.endswith("-admins") or
                    channel_name.endswith("-apptbk")):
                 logger.info(f"Ignoring message from non-target channel: {channel_name}")
                 return
@@ -862,7 +910,7 @@ def handle_message(event, say):
         # Check if this is a thread reply
         is_thread_reply = thread_ts is not None and thread_ts != timestamp
 
-        logger.info(f"PROCESSING message - Channel: {channel_name} ({channel_id}), Timestamp: {timestamp}, Thread TS: {thread_ts}, Is Thread Reply: {is_thread_reply}, Has Attachments: {bool(attachments)}, Has Files: {bool(files)}")
+        logger.info(f"[{current_bot_config.name}] ✅ PROCESSING message - Channel: {channel_name} ({channel_id}), Timestamp: {timestamp}, Thread TS: {thread_ts}, Is Thread Reply: {is_thread_reply}, Has Attachments: {bool(attachments)}, Has Files: {bool(files)}")
 
         forward_message(
             channel_id=channel_id,
@@ -874,8 +922,10 @@ def handle_message(event, say):
             attachments=attachments,
             files=files
         )
+        
+        logger.info(f"[{current_bot_config.name}] ✅ FORWARDED message from {channel_name}")
     except Exception as e:
-        logger.error(f"Error handling message: {str(e)}")
+        logger.error(f"[{current_bot_config.name}] Error handling message: {str(e)}")
 
 @app.event("message_changed")
 def handle_message_edit(event, say):
@@ -885,14 +935,23 @@ def handle_message_edit(event, say):
         edited_message = event["message"]
         channel_id = event["channel"]
         timestamp = edited_message["ts"]
-
-        # Check if this channel is assigned to the current bot
-        if not multi_bot_manager.is_channel_assigned_to_current_bot(channel_id):
-            logger.debug(f"⏭️ Ignoring edit from channel {channel_id} - not assigned to {current_bot_config.name}")
-            return
-
-        # Debug logging
-        logger.info(f"Received edit from channel_id: {channel_id}")
+        
+        # FIRST-COME-FIRST-SERVE: Any bot can process, timestamp-based deduplication
+        message_key = f"{channel_id}:{timestamp}:edit"
+        
+        # Check for duplicate processing
+        with cache_lock:
+            current_time = time.time()
+            
+            # Check if already processed
+            if message_key in processed_messages_cache:
+                logger.debug(f"[{current_bot_config.name}] ⏭️ DUPLICATE - Edit {message_key} already processed by another bot")
+                return
+            
+            # Mark as processed IMMEDIATELY (claim ownership)
+            processed_messages_cache[message_key] = current_time
+        
+        logger.info(f"[{current_bot_config.name}] 🏃 FIRST-RESPONDER - Processing edit from channel {channel_id}")
 
         try:
             channel_info = client.conversations_info(channel=channel_id)["channel"]
@@ -908,11 +967,8 @@ def handle_message_edit(event, say):
                 logger.info(f"IGNORING edit from categorized ignored channel: {channel_name}")
                 return
 
-            # For apptbk channels, process ALL edits (bots and non-bots)
-            if channel_name.endswith("-apptbk"):
-                logger.info(f"Processing apptbk edit (including bots): {channel_name}")
             # Ignore bot edits in non-apptbk channels
-            elif "bot_id" in edited_message:
+            if "bot_id" in edited_message and not channel_name.endswith("-apptbk"):
                 logger.info(f"Ignoring bot edit in non-apptbk channel: {channel_name}")
                 return
 
@@ -926,9 +982,9 @@ def handle_message_edit(event, say):
 
             # Only process messages from channels ending with specific suffixes
             if not (channel_name.endswith("-admin") or
+                   channel_name.endswith("-admins") or
                    channel_name.endswith("-agent") or
                    channel_name.endswith("-agents") or
-                   channel_name.endswith("-admins") or
                    channel_name.endswith("-apptbk")):
                 logger.info(f"Ignoring message from non-target channel: {channel_name}")
                 return
@@ -978,8 +1034,10 @@ def main():
 
         # Note: Channel invitation removed - not needed for mapping functionality
         logger.info("🚀 Bot initialization complete - ready to listen for messages")
-        # Start the app with current bot's app token
-        handler = SocketModeHandler(app_token=current_bot_config.app_token, app=app)
+        # Start the app with current bot's app token (from environment variable set by multi_bot_launcher)
+        app_token = os.environ.get("SLACK_APP_TOKEN", current_bot_config.app_token)
+        logger.info(f"🔌 Connecting to Slack with app token: {app_token[:12]}...")
+        handler = SocketModeHandler(app_token=app_token, app=app)
         
         # Check if we're running in the main thread (for signal handling)
         if threading.current_thread() is threading.main_thread():

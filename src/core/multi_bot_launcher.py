@@ -12,11 +12,18 @@ Usage:
 
 import os
 import sys
+import io
 import time
 import logging
 import threading
+import multiprocessing
 from datetime import datetime
 from dotenv import load_dotenv
+
+# Set UTF-8 encoding for Windows console
+if sys.platform == 'win32':
+    sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8')
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8')
 
 # Add src directory to Python path for imports to work
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
@@ -35,69 +42,84 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+def run_bot_process(bot_id, bot_token, app_token, bot_name):
+    """Run a bot instance in a separate process"""
+    try:
+        # Set the BOT_ID environment variable for this process
+        os.environ["BOT_ID"] = str(bot_id)
+        os.environ["SLACK_BOT_TOKEN"] = bot_token
+        os.environ["SLACK_APP_TOKEN"] = app_token
+        
+        # Configure logging for this process
+        logging.basicConfig(
+            level=logging.INFO,
+            format=f'%(asctime)s - %(name)s - [{bot_name}] - %(levelname)s - %(message)s',
+            datefmt='%Y-%m-%d %H:%M:%S'
+        )
+        logger = logging.getLogger(__name__)
+        
+        logger.info(f"[START] Starting {bot_name} in separate process...")
+        logger.info(f"   • Bot ID: {bot_id}")
+        logger.info(f"   • Bot Token: {bot_token[:12]}...")
+        logger.info(f"   • App Token: {app_token[:12]}...")
+        logger.info(f"   • Process ID: {os.getpid()}")
+
+        # Import and run the listener
+        sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+        from core import listener
+
+        # Run the main function
+        listener.main()
+
+    except KeyboardInterrupt:
+        logger.info(f"[STOP] {bot_name} interrupted by user")
+    except Exception as e:
+        logger.error(f"[ERROR] Error in {bot_name}: {e}")
+        import traceback
+        traceback.print_exc()
+    finally:
+        logger.info(f"[END] {bot_name} stopped")
+
+
 class BotRunner:
-    """Runs a single bot instance in a thread"""
+    """Runs a single bot instance in a separate process"""
     
     def __init__(self, bot_id: int, bot_config):
         self.bot_id = bot_id
         self.bot_config = bot_config
-        self.thread = None
+        self.process = None
         self.running = False
         
-    def run_bot(self):
-        """Run the bot instance"""
-        try:
-            # Set the BOT_ID environment variable for this thread
-            os.environ["BOT_ID"] = str(self.bot_id)
-            
-            logger.info(f"🚀 Starting {self.bot_config.name}...")
-            logger.info(f"   • Bot ID: {self.bot_id}")
-            logger.info(f"   • Bot Token: {self.bot_config.bot_token[:12]}...")
-            logger.info(f"   • App Token: {self.bot_config.app_token[:12]}...")
-            
-            # Import and run the listener
-            # We need to import here to avoid conflicts between bot instances
-            import importlib
-            from core import listener
-            
-            # Reload the listener module to pick up the new BOT_ID
-            importlib.reload(listener)
-            
-            # Run the main function
-            listener.main()
-            
-        except KeyboardInterrupt:
-            logger.info(f"🛑 {self.bot_config.name} interrupted by user")
-        except Exception as e:
-            logger.error(f"❌ Error in {self.bot_config.name}: {e}")
-            logger.exception("Full error details:")
-        finally:
-            self.running = False
-            logger.info(f"🔚 {self.bot_config.name} stopped")
-    
     def start(self):
-        """Start the bot in a separate thread"""
-        if self.running:
-            logger.warning(f"⚠️ {self.bot_config.name} is already running")
+        """Start the bot in a separate process"""
+        if self.running and self.process and self.process.is_alive():
+            logger.warning(f"[WARN] {self.bot_config.name} is already running")
             return
-        
+
         self.running = True
-        self.thread = threading.Thread(
-            target=self.run_bot,
+        self.process = multiprocessing.Process(
+            target=run_bot_process,
+            args=(self.bot_id, self.bot_config.bot_token, self.bot_config.app_token, self.bot_config.name),
             name=f"Bot-{self.bot_id}",
             daemon=False  # Don't make daemon so we can wait for clean shutdown
         )
-        self.thread.start()
-        logger.info(f"✅ {self.bot_config.name} thread started")
+        self.process.start()
+        logger.info(f"[OK] {self.bot_config.name} process started (PID: {self.process.pid})")
     
     def is_alive(self):
-        """Check if the bot thread is still running"""
-        return self.thread and self.thread.is_alive()
+        """Check if the bot process is still running"""
+        return self.process and self.process.is_alive()
     
     def join(self, timeout=None):
-        """Wait for the bot thread to finish"""
-        if self.thread:
-            self.thread.join(timeout)
+        """Wait for the bot process to finish"""
+        if self.process:
+            self.process.join(timeout)
+    
+    def terminate(self):
+        """Terminate the bot process"""
+        if self.process and self.process.is_alive():
+            self.process.terminate()
+            self.process.join(timeout=5)
 
 class MultiBotLauncher:
     """Manages multiple bot instances"""
@@ -107,30 +129,30 @@ class MultiBotLauncher:
         self.bot_runners = {}
         self.running = False
         
-        logger.info("🤖 Multi-Bot Launcher initialized")
+        logger.info("[BOT] Multi-Bot Launcher initialized")
         logger.info(f"   • Total bots configured: {len(self.multi_bot_manager.bot_configs)}")
-        
+
         # Create bot runners for each configured bot
         for bot_id, bot_config in self.multi_bot_manager.bot_configs.items():
             self.bot_runners[bot_id] = BotRunner(bot_id, bot_config)
-    
+
     def start_all_bots(self):
         """Start all configured bots"""
-        logger.info("🚀 Starting all bots...")
+        logger.info("[START] Starting all bots...")
         logger.info("=" * 60)
-        
+
         self.running = True
-        
+
         # Start each bot in its own thread
         for bot_id, bot_runner in self.bot_runners.items():
             try:
                 bot_runner.start()
                 time.sleep(2)  # Small delay between bot starts
             except Exception as e:
-                logger.error(f"❌ Failed to start Bot-{bot_id}: {e}")
-        
+                logger.error(f"[ERROR] Failed to start Bot-{bot_id}: {e}")
+
         logger.info("=" * 60)
-        logger.info("✅ All bots started!")
+        logger.info("[OK] All bots started!")
         
         # Log the assignment distribution
         self.multi_bot_manager.log_assignment_stats()
@@ -139,56 +161,62 @@ class MultiBotLauncher:
     
     def monitor_bots(self):
         """Monitor bot health and restart if needed"""
-        logger.info("👁️ Starting bot monitoring...")
-        
+        logger.info("[MONITOR] Starting bot monitoring...")
+
         while self.running:
             try:
                 # Check each bot's health
                 for bot_id, bot_runner in self.bot_runners.items():
                     if not bot_runner.is_alive() and self.running:
-                        logger.warning(f"⚠️ Bot-{bot_id} appears to have stopped. Attempting restart...")
+                        logger.warning(f"[WARN] Bot-{bot_id} appears to have stopped. Attempting restart...")
                         try:
                             bot_runner.start()
                             time.sleep(5)  # Give it time to start
                         except Exception as e:
-                            logger.error(f"❌ Failed to restart Bot-{bot_id}: {e}")
-                
+                            logger.error(f"[ERROR] Failed to restart Bot-{bot_id}: {e}")
+
                 # Sleep for 30 seconds before next health check
                 time.sleep(30)
-                
+
             except KeyboardInterrupt:
-                logger.info("🛑 Bot monitoring interrupted")
+                logger.info("[STOP] Bot monitoring interrupted")
                 break
             except Exception as e:
-                logger.error(f"❌ Error in bot monitoring: {e}")
+                logger.error(f"[ERROR] Error in bot monitoring: {e}")
                 time.sleep(10)  # Wait before retrying
     
     def stop_all_bots(self):
         """Stop all bots gracefully"""
-        logger.info("🛑 Stopping all bots...")
-        
+        logger.info("[STOP] Stopping all bots...")
+
         self.running = False
-        
+
+        # Terminate all bot processes
+        for bot_id, bot_runner in self.bot_runners.items():
+            if bot_runner.is_alive():
+                logger.info(f"[STOP] Terminating Bot-{bot_id}...")
+                bot_runner.terminate()
+
         # Wait for all bots to finish (with timeout)
         for bot_id, bot_runner in self.bot_runners.items():
-            logger.info(f"⏳ Waiting for Bot-{bot_id} to stop...")
-            bot_runner.join(timeout=10)  # 10 second timeout per bot
-            
+            logger.info(f"[WAIT] Waiting for Bot-{bot_id} to stop...")
+            bot_runner.join(timeout=5)  # 5 second timeout per bot
+
             if bot_runner.is_alive():
-                logger.warning(f"⚠️ Bot-{bot_id} did not stop gracefully")
+                logger.warning(f"[WARN] Bot-{bot_id} did not stop gracefully")
             else:
-                logger.info(f"✅ Bot-{bot_id} stopped")
-        
-        logger.info("🔚 All bots stopped")
+                logger.info(f"[OK] Bot-{bot_id} stopped")
+
+        logger.info("[END] All bots stopped")
     
     def run(self):
         """Run the multi-bot system"""
         try:
             # Start all bots
             if not self.start_all_bots():
-                logger.error("❌ Failed to start bots")
+                logger.error("[ERROR] Failed to start bots")
                 return False
-            
+
             # Start monitoring in a separate thread
             monitor_thread = threading.Thread(
                 target=self.monitor_bots,
@@ -196,29 +224,29 @@ class MultiBotLauncher:
                 daemon=True
             )
             monitor_thread.start()
-            
+
             # Main loop - just wait and handle interrupts
-            logger.info("🎯 Multi-bot system running. Press Ctrl+C to stop.")
-            logger.info("📊 Bot Status:")
-            
+            logger.info("[RUNNING] Multi-bot system running. Press Ctrl+C to stop.")
+            logger.info("[STATUS] Bot Status:")
+
             while self.running:
                 # Show status every 60 seconds
                 alive_count = sum(1 for runner in self.bot_runners.values() if runner.is_alive())
                 total_count = len(self.bot_runners)
-                
-                logger.info(f"💓 Heartbeat: {alive_count}/{total_count} bots running")
-                
+
+                logger.info(f"[HEARTBEAT] {alive_count}/{total_count} bots running")
+
                 # List running bots
                 for bot_id, bot_runner in self.bot_runners.items():
-                    status = "🟢 Running" if bot_runner.is_alive() else "🔴 Stopped"
+                    status = "[RUNNING]" if bot_runner.is_alive() else "[STOPPED]"
                     logger.info(f"   • Bot-{bot_id}: {status}")
-                
+
                 time.sleep(60)  # Status update every minute
-            
+
         except KeyboardInterrupt:
-            logger.info("🛑 Received interrupt signal")
+            logger.info("[STOP] Received interrupt signal")
         except Exception as e:
-            logger.error(f"❌ Error in multi-bot system: {e}")
+            logger.error(f"[ERROR] Error in multi-bot system: {e}")
             logger.exception("Full error details:")
         finally:
             self.stop_all_bots()
@@ -228,12 +256,12 @@ class MultiBotLauncher:
 def print_startup_banner():
     """Print a nice startup banner"""
     print("=" * 80)
-    print("🤖 MULTI-BOT SLACK FORWARDING SYSTEM")
+    print("[BOT] MULTI-BOT SLACK FORWARDING SYSTEM")
     print("=" * 80)
-    print(f"⏰ Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    print("🎯 Features:")
+    print(f"Started at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    print("Features:")
     print("   • Distributed channel processing")
-    print("   • Automatic rate limit management") 
+    print("   • Automatic rate limit management")
     print("   • Real-time message forwarding")
     print("   • Thread-based bot management")
     print("   • Health monitoring and auto-restart")
@@ -248,27 +276,29 @@ def main():
         launcher = MultiBotLauncher()
         
         if not launcher.multi_bot_manager.bot_configs:
-            print("❌ ERROR: No bot configurations found!")
-            print("💡 Please check your environment variables:")
+            print("[ERROR] No bot configurations found!")
+            print("[INFO] Please check your environment variables:")
             print("   • SLACK_BOT_TOKEN and SLACK_APP_TOKEN")
             print("   • SLACK_BOT_TOKEN_2 and SLACK_APP_TOKEN_2")
             print("   • etc.")
             return False
-        
+
         success = launcher.run()
-        
+
         if success:
-            print("\n✅ Multi-bot system completed successfully!")
+            print("\n[OK] Multi-bot system completed successfully!")
         else:
-            print("\n❌ Multi-bot system failed!")
-            
+            print("\n[ERROR] Multi-bot system failed!")
+
         return success
-        
+
     except Exception as e:
-        logger.error(f"❌ Fatal error: {e}")
+        logger.error(f"[ERROR] Fatal error: {e}")
         logger.exception("Full error details:")
         return False
 
 if __name__ == "__main__":
+    # Required for multiprocessing on Windows
+    multiprocessing.freeze_support()
     success = main()
     sys.exit(0 if success else 1)

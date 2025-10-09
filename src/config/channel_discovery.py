@@ -8,12 +8,18 @@ Integrates with the existing channel mapping system.
 """
 
 import os
+import sys
 import json
 import logging
 import requests
 from typing import List, Dict, Any
 from dotenv import load_dotenv
-from .multi_bot_config import MultiBotConfigManager
+
+# Handle both direct execution and module import
+try:
+    from .multi_bot_config import MultiBotConfigManager
+except ImportError:
+    from multi_bot_config import MultiBotConfigManager
 
 # Load environment variables
 load_dotenv()
@@ -164,9 +170,54 @@ class ChannelDiscoveryManager:
         except Exception as e:
             logger.error(f"❌ Error saving channel details: {e}")
     
-    def run_full_discovery(self) -> Dict[int, List[str]]:
+    def invite_bots_to_channels(self):
+        """
+        Invite all bots to their assigned channels
+        Runs the bot invitation script automatically
+        """
+        try:
+            logger.info("🤖 Inviting bots to their assigned channels...")
+            
+            # Import the bot invitation module
+            script_path = os.path.join(os.path.dirname(__file__), '..', '..', 'scripts')
+            sys.path.insert(0, script_path)
+            
+            try:
+                from bot_channel_inviter import BotChannelInviter
+                
+                # Run the invitation process
+                inviter = BotChannelInviter()
+                results = inviter.invite_bots_to_assigned_channels()
+                
+                if results:
+                    # Log summary
+                    total_successful = sum(r["successful_invitations"] for r in results.values())
+                    total_already_in = sum(r["already_in_channel"] for r in results.values())
+                    logger.info(f"✅ Bot invitation complete:")
+                    logger.info(f"   • Already in: {total_already_in} channels")
+                    logger.info(f"   • New invitations: {total_successful}")
+                    
+                    # Save results
+                    inviter.save_invitation_results(results)
+                    return True
+                else:
+                    logger.warning("⚠️ No invitation results returned")
+                    return False
+                    
+            except ImportError as e:
+                logger.error(f"❌ Could not import bot_channel_inviter: {e}")
+                return False
+                
+        except Exception as e:
+            logger.error(f"❌ Error inviting bots to channels: {e}")
+            return False
+    
+    def run_full_discovery(self, auto_invite: bool = True) -> Dict[int, List[str]]:
         """
         Run complete channel discovery and assignment process
+        
+        Args:
+            auto_invite: If True, automatically invite bots to their assigned channels after discovery
         
         Returns:
             Dictionary mapping bot_id -> list of assigned channel_ids
@@ -187,10 +238,16 @@ class ChannelDiscoveryManager:
                 logger.error("❌ No admin channels found")
                 return {}
             
-            # Step 3: Assign channels to bots
+            # Step 3: Assign channels to bots (only NEW channels)
             assignments = self.assign_channels_to_bots(admin_channels)
             
-            # Step 4: Log results
+            # Step 4: Automatically invite bots to their assigned channels
+            if auto_invite:
+                logger.info("=" * 60)
+                logger.info("🤖 Auto-inviting bots to their assigned channels...")
+                self.invite_bots_to_channels()
+            
+            # Step 5: Log results
             logger.info("=" * 60)
             logger.info("🎉 Channel discovery and assignment complete!")
             self.multi_bot_manager.log_assignment_stats()

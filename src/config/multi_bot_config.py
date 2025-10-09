@@ -125,39 +125,57 @@ class MultiBotConfigManager:
     
     def assign_channels_to_bots(self, channel_ids: List[str]) -> Dict[int, List[str]]:
         """
-        Assign channels to bots using consistent hashing
+        Assign channels to bots using consistent hashing.
+        Only assigns NEW channels - existing assignments are preserved.
         
         Args:
             channel_ids: List of channel IDs to assign
             
         Returns:
-            Dictionary mapping bot_id -> list of assigned channel_ids
+            Dictionary mapping bot_id -> list of assigned channel_ids (includes both new and existing)
         """
-        logger.info(f"🎯 Assigning {len(channel_ids)} channels to {len(self.bot_configs)} bots...")
+        # Separate new channels from already-assigned channels
+        new_channels = [ch_id for ch_id in channel_ids if ch_id not in self.channel_assignments]
+        existing_channels = [ch_id for ch_id in channel_ids if ch_id in self.channel_assignments]
         
-        # Clear existing assignments for these channels
-        for channel_id in channel_ids:
-            if channel_id in self.channel_assignments:
-                del self.channel_assignments[channel_id]
+        logger.info(f"🎯 Processing {len(channel_ids)} channels:")
+        logger.info(f"   • {len(existing_channels)} already assigned (keeping existing assignments)")
+        logger.info(f"   • {len(new_channels)} new channels to assign")
         
-        # Assign channels using consistent hashing
+        # Initialize bot assignments with empty lists
         bot_assignments = {bot_id: [] for bot_id in self.bot_configs.keys()}
         
-        for channel_id in channel_ids:
-            # Use hash of channel_id to determine bot assignment
-            hash_value = int(hashlib.md5(channel_id.encode()).hexdigest(), 16)
-            assigned_bot_id = (hash_value % len(self.bot_configs)) + 1
+        # Only assign NEW channels using consistent hashing
+        if new_channels:
+            logger.info(f"🆕 Assigning {len(new_channels)} new channels to {len(self.bot_configs)} bots...")
             
-            # Store assignment
-            self.channel_assignments[channel_id] = assigned_bot_id
-            bot_assignments[assigned_bot_id].append(channel_id)
+            for channel_id in new_channels:
+                # Use hash of channel_id to determine bot assignment
+                hash_value = int(hashlib.md5(channel_id.encode()).hexdigest(), 16)
+                assigned_bot_id = (hash_value % len(self.bot_configs)) + 1
+                
+                # Store assignment
+                self.channel_assignments[channel_id] = assigned_bot_id
+                bot_assignments[assigned_bot_id].append(channel_id)
+            
+            # Log NEW assignment distribution
+            logger.info(f"   📊 New channel distribution:")
+            for bot_id, channels in bot_assignments.items():
+                if channels:
+                    logger.info(f"      🤖 Bot-{bot_id}: +{len(channels)} new channels")
         
-        # Log assignment distribution
-        for bot_id, channels in bot_assignments.items():
-            logger.info(f"   🤖 Bot-{bot_id}: {len(channels)} channels")
+        # Add existing assignments to the result
+        for channel_id in existing_channels:
+            assigned_bot_id = self.channel_assignments[channel_id]
+            bot_assignments[assigned_bot_id].append(channel_id)
         
         # Save assignments
         self.save_channel_assignments()
+        
+        # Log overall distribution
+        logger.info(f"   📊 Total channel distribution:")
+        for bot_id, channels in bot_assignments.items():
+            logger.info(f"      🤖 Bot-{bot_id}: {len(channels)} total channels")
         
         return bot_assignments
     
