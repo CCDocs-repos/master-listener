@@ -18,8 +18,10 @@ A sophisticated Slack bot system that forwards messages from client channels to 
 master-listener/
 ├── src/
 │   ├── core/           # Core bot functionality
-│   │   ├── listener.py           # Main message listener
-│   │   └── multi_bot_launcher.py # Multi-bot orchestrator
+│   │   ├── listener.py           # Legacy inline-forward listener
+│   │   ├── listener_redis.py     # Redis-backed listener (enqueue-only)
+│   │   ├── forwarder_worker.py   # Worker that posts to Slack from Redis queue
+│   │   └── multi_bot_launcher.py # Multi-bot orchestrator (spawns worker + bots)
 │   ├── config/         # Configuration and discovery
 │   │   ├── multi_bot_config.py   # Bot configuration manager
 │   │   ├── channel_discovery.py  # Channel discovery system
@@ -66,7 +68,7 @@ master-listener/
    # Edit .env with your tokens
    ```
 
-4. **Run the bot**
+4. **Run the system**
    ```bash
    python main.py
    ```
@@ -122,18 +124,18 @@ The bot handles four types of channels:
 
 ## 🔧 Usage
 
-### Starting the Multi-Bot System
+### Starting the Multi-Bot System (Redis-backed)
 
 ```bash
-# Start all configured bots
+# Start forwarder worker + all configured bots
 python main.py
 ```
 
 The system will:
-1. Load bot configurations from environment variables
-2. Discover and assign channels to bots
-3. Start message forwarding
-4. Monitor bot health and restart if needed
+1. Launch a Redis-backed forwarder worker (consumes `forwarding:jobs`).
+2. Start one process per bot running `listener_redis.py` (FCFS idempotency + enqueue only).
+3. Discover and assign channels (Bot-1 responsibility), reload categorizations for all bots.
+4. Monitor worker and bots and restart if needed.
 
 ### Manual Channel Discovery
 
@@ -220,21 +222,26 @@ docker build -t master-listener .
 docker-compose up -d
 ```
 
-### Environment
+### Environment (Redis-backed)
 
 The Docker setup includes:
 - Multi-stage build for optimization
 - Non-root user for security
 - Volume mounts for logs and data
 - Automatic restart policies
+- Redis Cloud connectivity via `redis-client.py`
 
-## 📝 Logging
+## 📝 Logging & Flow
 
 Logs are structured and include:
 - Timestamp and log level
 - Thread/bot identification
 - Message processing details
 - Error handling and recovery
+
+Event flow (Redis-backed):
+- Listener receives Slack event → FCFS claim via Redis (`client_msg_id` or `event_id`) → enqueue job to `forwarding:jobs`.
+- Worker consumes jobs → rate limits and retries → posts to master channel → stores `source ts → master ts` mapping for edits.
 
 Example log output:
 ```
@@ -243,13 +250,14 @@ Example log output:
 2024-01-01 12:00:02 - listener - [Bot-1] - INFO - ✅ SUCCESSFULLY FORWARDED managed admin message
 ```
 
-## 🔒 Security
+## 🔒 Security & Reliability
 
 - Bot tokens are stored as environment variables
 - Non-root Docker user
-- Rate limit handling prevents API abuse
+- Rate limit handling in worker prevents API abuse (429 Retry-After honored)
 - Channel access validation
 - Secure file handling for attachments
+ - FCFS idempotency via Redis prevents duplicate processing across bots
 
 ## 🤝 Contributing
 
@@ -273,7 +281,13 @@ For issues and questions:
 
 ## 🔄 Changelog
 
-### v2.0.0 (Current)
+### v3.0.0 (Current)
+- Redis-backed architecture: `listener_redis` + `forwarder_worker`
+- FCFS idempotency using `client_msg_id` → fallback `event_id` (never `ts`)
+- Multi-bot launcher spawns worker first, then bots
+- Basic retry/backoff and thread parent posting in worker
+
+### v2.0.0
 - Multi-bot architecture implementation
 - Intelligent channel discovery
 - ClickUp integration

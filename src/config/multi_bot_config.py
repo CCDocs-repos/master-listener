@@ -36,15 +36,16 @@ class MultiBotConfigManager:
         self.bot_configs: Dict[int, BotConfig] = {}
         self.current_bot_id: Optional[int] = None
         self.channel_assignments: Dict[str, int] = {}
-        self.assignment_file = "data/channel_assignment.json"
+        
+        # Get absolute path to project root (src/config -> ../..)
+        project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..', '..'))
+        self.assignment_file = os.path.join(project_root, "data", "channel_assignment.json")
         
         self._load_bot_configs()
         self._load_channel_assignments()
     
     def _load_bot_configs(self):
         """Load all bot configurations from environment variables"""
-        logger.info("🤖 Loading multi-bot configurations...")
-        
         # Get current bot ID from environment
         self.current_bot_id = int(os.environ.get("BOT_ID", "1"))
         
@@ -74,17 +75,12 @@ class MultiBotConfigManager:
             )
             
             self.bot_configs[bot_id] = bot_config
-            logger.info(f"   ✅ Loaded {bot_config.name}: {bot_token[:12]}...")
-            
             bot_id += 1
         
         if not self.bot_configs:
             raise ValueError("No bot configurations found! Please set SLACK_BOT_TOKEN and SLACK_APP_TOKEN")
         
-        logger.info(f"🚀 Multi-bot setup complete:")
-        logger.info(f"   • Total bots configured: {len(self.bot_configs)}")
-        logger.info(f"   • Current bot ID: {self.current_bot_id}")
-        logger.info(f"   • Bot IDs: {list(self.bot_configs.keys())}")
+        logger.info(f"Bot-{self.current_bot_id} initialized ({len(self.bot_configs)} bots total)")
         
         # Validate current bot ID
         if self.current_bot_id not in self.bot_configs:
@@ -96,9 +92,7 @@ class MultiBotConfigManager:
             with open(self.assignment_file, 'r') as f:
                 data = json.load(f)
                 self.channel_assignments = data.get('assignments', {})
-                logger.info(f"📋 Loaded {len(self.channel_assignments)} channel assignments")
         except FileNotFoundError:
-            logger.info("📋 No existing channel assignments found - will create new ones")
             self.channel_assignments = {}
         except Exception as e:
             logger.error(f"❌ Error loading channel assignments: {e}")
@@ -118,10 +112,8 @@ class MultiBotConfigManager:
             
             with open(self.assignment_file, 'w') as f:
                 json.dump(data, f, indent=2)
-            
-            logger.info(f"💾 Saved {len(self.channel_assignments)} channel assignments")
         except Exception as e:
-            logger.error(f"❌ Error saving channel assignments: {e}")
+            logger.error(f"Error saving channel assignments: {e}")
     
     def assign_channels_to_bots(self, channel_ids: List[str]) -> Dict[int, List[str]]:
         """
@@ -138,17 +130,14 @@ class MultiBotConfigManager:
         new_channels = [ch_id for ch_id in channel_ids if ch_id not in self.channel_assignments]
         existing_channels = [ch_id for ch_id in channel_ids if ch_id in self.channel_assignments]
         
-        logger.info(f"🎯 Processing {len(channel_ids)} channels:")
-        logger.info(f"   • {len(existing_channels)} already assigned (keeping existing assignments)")
-        logger.info(f"   • {len(new_channels)} new channels to assign")
+        if new_channels:
+            logger.info(f"Assigning {len(new_channels)} new channels ({len(existing_channels)} existing)")
         
         # Initialize bot assignments with empty lists
         bot_assignments = {bot_id: [] for bot_id in self.bot_configs.keys()}
         
         # Only assign NEW channels using consistent hashing
         if new_channels:
-            logger.info(f"🆕 Assigning {len(new_channels)} new channels to {len(self.bot_configs)} bots...")
-            
             for channel_id in new_channels:
                 # Use hash of channel_id to determine bot assignment
                 hash_value = int(hashlib.md5(channel_id.encode()).hexdigest(), 16)
@@ -157,12 +146,6 @@ class MultiBotConfigManager:
                 # Store assignment
                 self.channel_assignments[channel_id] = assigned_bot_id
                 bot_assignments[assigned_bot_id].append(channel_id)
-            
-            # Log NEW assignment distribution
-            logger.info(f"   📊 New channel distribution:")
-            for bot_id, channels in bot_assignments.items():
-                if channels:
-                    logger.info(f"      🤖 Bot-{bot_id}: +{len(channels)} new channels")
         
         # Add existing assignments to the result
         for channel_id in existing_channels:
@@ -171,11 +154,6 @@ class MultiBotConfigManager:
         
         # Save assignments
         self.save_channel_assignments()
-        
-        # Log overall distribution
-        logger.info(f"   📊 Total channel distribution:")
-        for bot_id, channels in bot_assignments.items():
-            logger.info(f"      🤖 Bot-{bot_id}: {len(channels)} total channels")
         
         return bot_assignments
     
@@ -220,15 +198,7 @@ class MultiBotConfigManager:
     def log_assignment_stats(self):
         """Log current assignment statistics"""
         stats = self.get_assignment_stats()
-        
-        logger.info("📊 Channel Assignment Statistics:")
-        logger.info(f"   • Total bots: {stats['total_bots']}")
-        logger.info(f"   • Total channels: {stats['total_channels']}")
-        logger.info(f"   • Current bot: {stats['current_bot_id']} ({stats['current_bot_channels']} channels)")
-        
-        for bot_key, count in stats["bot_distribution"].items():
-            bot_id = bot_key.split('_')[1]
-            logger.info(f"   • Bot-{bot_id}: {count} channels")
+        logger.info(f"Bot-{stats['current_bot_id']}: {stats['current_bot_channels']}/{stats['total_channels']} channels")
 
 def main():
     """Test the multi-bot configuration manager"""

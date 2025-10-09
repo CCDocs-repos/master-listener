@@ -11,6 +11,7 @@ import pytz
 import threading
 import time
 import subprocess
+import redis
 from slack_sdk import WebClient
 from slack_sdk.errors import SlackApiError
 
@@ -87,10 +88,27 @@ IGNORED_CHANNEL_NAMES = [
     "master-admin-storm"
 ]
 
-# Duplicate detection cache (stores message keys: "msg_id:channel_id")
-# Primary: client_msg_id (Slack's unique message identifier)
-# Fallback: MD5 hash of channel:user:text (deterministic, never uses timestamp)
-# Messages are kept for 5 minutes to prevent duplicate processing across bot instances
+# Initialize Redis client for cross-process message deduplication
+# All bot processes share this Redis cache for true first-responder architecture
+try:
+    redis_client = redis.Redis(
+        host=os.environ.get('REDIS_HOST'),
+        port=int(os.environ.get('REDIS_PORT')),
+        username=os.environ.get('REDIS_USERNAME', 'default'),
+        password=os.environ.get('REDIS_PASSWORD'),
+        decode_responses=True,
+        socket_connect_timeout=5,
+        socket_timeout=5
+    )
+    # Test connection
+    redis_client.ping()
+    logger.info(f"✅ Redis connected: {os.environ.get('REDIS_HOST')}:{os.environ.get('REDIS_PORT')}")
+except Exception as e:
+    logger.error(f"❌ Redis connection failed: {e}")
+    logger.warning("⚠️ Falling back to in-memory cache (duplicates may occur across processes)")
+    redis_client = None
+
+# Fallback in-memory cache (only used if Redis fails)
 processed_messages_cache = {}
 cache_lock = threading.Lock()
 
@@ -320,7 +338,6 @@ def forward_managed_admin_message(channel_id, text, user, timestamp, message_ts=
         # Add thread_ts if this is a thread reply
         if is_thread_reply:
             parent_key = f"{channel_id}_{thread_ts}"
-            logger.info(f"Looking for parent message with key: {parent_key}")
 
             if parent_key in message_tracker:
                 message_params["thread_ts"] = message_tracker[parent_key]
@@ -386,7 +403,6 @@ def forward_managed_admin_message(channel_id, text, user, timestamp, message_ts=
                         file_attachment["image_url"] = file_info["file"]["url_private"]
 
                     message_params["attachments"].append(file_attachment)
-                    logger.info(f"Added file attachment: {file_info['file']['name']}")
 
                 except SlackApiError as e:
                     logger.error(f"Error handling file: {e.response['error']}")
@@ -401,13 +417,11 @@ def forward_managed_admin_message(channel_id, text, user, timestamp, message_ts=
             # This is an edit, update the existing message
             message_params["ts"] = message_ts
             client.chat_update(**message_params)
-            logger.info(f"Updated managed admin message in master channel {target_channel} from {channel_name}")
         else:
             # This is a new message
             response = client.chat_postMessage(**message_params)
             # Store the message ID for future edits and thread tracking
             message_tracker[f"{channel_id}_{timestamp}"] = response["ts"]
-            logger.info(f"SUCCESSFULLY FORWARDED managed admin message from {channel_name} to master channel {target_channel}")
 
     except SlackApiError as e:
         logger.error(f"Error forwarding managed admin message: {e.response['error']}")
@@ -457,7 +471,6 @@ def forward_storm_admin_message(channel_id, text, user, timestamp, message_ts=No
         # Add thread_ts if this is a thread reply
         if is_thread_reply:
             parent_key = f"{channel_id}_{thread_ts}"
-            logger.info(f"Looking for parent message with key: {parent_key}")
 
             if parent_key in message_tracker:
                 message_params["thread_ts"] = message_tracker[parent_key]
@@ -523,7 +536,6 @@ def forward_storm_admin_message(channel_id, text, user, timestamp, message_ts=No
                         file_attachment["image_url"] = file_info["file"]["url_private"]
 
                     message_params["attachments"].append(file_attachment)
-                    logger.info(f"Added file attachment: {file_info['file']['name']}")
 
                 except SlackApiError as e:
                     logger.error(f"Error handling file: {e.response['error']}")
@@ -538,13 +550,11 @@ def forward_storm_admin_message(channel_id, text, user, timestamp, message_ts=No
             # This is an edit, update the existing message
             message_params["ts"] = message_ts
             client.chat_update(**message_params)
-            logger.info(f"Updated storm admin message in master channel {target_channel} from {channel_name}")
         else:
             # This is a new message
             response = client.chat_postMessage(**message_params)
             # Store the message ID for future edits and thread tracking
             message_tracker[f"{channel_id}_{timestamp}"] = response["ts"]
-            logger.info(f"SUCCESSFULLY FORWARDED storm admin message from {channel_name} to master channel {target_channel}")
 
     except SlackApiError as e:
         logger.error(f"Error forwarding storm admin message: {e.response['error']}")
@@ -590,7 +600,6 @@ def forward_agent_message(channel_id, text, user, timestamp, message_ts=None, th
         # Add thread_ts if this is a thread reply
         if is_thread_reply:
             parent_key = f"{channel_id}_{thread_ts}"
-            logger.info(f"Looking for parent message with key: {parent_key}")
 
             if parent_key in message_tracker:
                 message_params["thread_ts"] = message_tracker[parent_key]
@@ -656,7 +665,6 @@ def forward_agent_message(channel_id, text, user, timestamp, message_ts=None, th
                         file_attachment["image_url"] = file_info["file"]["url_private"]
 
                     message_params["attachments"].append(file_attachment)
-                    logger.info(f"Added file attachment: {file_info['file']['name']}")
 
                 except SlackApiError as e:
                     logger.error(f"Error handling file: {e.response['error']}")
@@ -671,13 +679,11 @@ def forward_agent_message(channel_id, text, user, timestamp, message_ts=None, th
             # This is an edit, update the existing message
             message_params["ts"] = message_ts
             client.chat_update(**message_params)
-            logger.info(f"Updated agent message in master channel {target_channel} from {channel_name}")
         else:
             # This is a new message
             response = client.chat_postMessage(**message_params)
             # Store the message ID for future edits and thread tracking
             message_tracker[f"{channel_id}_{timestamp}"] = response["ts"]
-            logger.info(f"SUCCESSFULLY FORWARDED agent message from {channel_name} to master channel {target_channel}")
 
     except SlackApiError as e:
         logger.error(f"Error forwarding agent message: {e.response['error']}")
@@ -719,7 +725,6 @@ def forward_apptbk_message(channel_id, text, user, timestamp, message_ts=None, t
         # Add thread_ts if this is a thread reply
         if is_thread_reply:
             parent_key = f"{channel_id}_{thread_ts}"
-            logger.info(f"Looking for parent message with key: {parent_key}")
 
             if parent_key in message_tracker:
                 message_params["thread_ts"] = message_tracker[parent_key]
@@ -785,7 +790,6 @@ def forward_apptbk_message(channel_id, text, user, timestamp, message_ts=None, t
                         file_attachment["image_url"] = file_info["file"]["url_private"]
 
                     message_params["attachments"].append(file_attachment)
-                    logger.info(f"Added file attachment: {file_info['file']['name']}")
 
                 except SlackApiError as e:
                     logger.error(f"Error handling file: {e.response['error']}")
@@ -800,13 +804,11 @@ def forward_apptbk_message(channel_id, text, user, timestamp, message_ts=None, t
             # This is an edit, update the existing message
             message_params["ts"] = message_ts
             client.chat_update(**message_params)
-            logger.info(f"Updated apptbk message in master channel {target_channel} from {channel_name}")
         else:
             # This is a new message
             response = client.chat_postMessage(**message_params)
             # Store the message ID for future edits and thread tracking
             message_tracker[f"{channel_id}_{timestamp}"] = response["ts"]
-            logger.info(f"SUCCESSFULLY FORWARDED apptbk message from {channel_name} to master channel {target_channel}")
 
     except SlackApiError as e:
         logger.error(f"Error forwarding apptbk message: {e.response['error']}")
@@ -855,72 +857,72 @@ def handle_message(event, say):
             # Fallback: Create deterministic hash from event content
             event_signature = f"{channel_id}:{event.get('user', 'bot')}:{event.get('text', '')[:50]}"
             msg_id = hashlib.md5(event_signature.encode()).hexdigest()[:16]
-            logger.debug(f"[{current_bot_config.name}] Generated fallback ID: {msg_id}")
         
-        message_key = f"{msg_id}:{channel_id}"
+        message_key = f"processed:{msg_id}:{channel_id}"
         
-        # Check for duplicate processing (prevents multiple bots from handling same message)
-        with cache_lock:
-            current_time = time.time()
-            
-            # Clean old entries (older than 5 minutes)
-            expired_keys = [k for k, v in processed_messages_cache.items() if current_time - v > 300]
-            for k in expired_keys:
-                del processed_messages_cache[k]
-            
-            # Check if already processed
-            if message_key in processed_messages_cache:
-                logger.info(f"[{current_bot_config.name}] ⏭️ DUPLICATE detected: {msg_id}")
-                return
-            
-            # Mark as processed IMMEDIATELY (claim ownership)
-            processed_messages_cache[message_key] = current_time
-        
-        logger.info(f"[{current_bot_config.name}] ✅ Processing message: {msg_id}")
+        # Check for duplicate processing (Redis first, fallback to in-memory)
+        if redis_client:
+            try:
+                # SET NX (set if not exists) with 5-minute expiration - atomic operation!
+                if not redis_client.set(message_key, current_bot_config.bot_id, ex=300, nx=True):
+                    return  # Duplicate - already processed by another bot
+            except Exception as redis_error:
+                logger.error(f"Redis error: {redis_error}")
+                # Fallback to in-memory cache
+                with cache_lock:
+                    if message_key in processed_messages_cache:
+                        return
+                    processed_messages_cache[message_key] = time.time()
+        else:
+            # Use in-memory cache as fallback
+            with cache_lock:
+                current_time = time.time()
+                
+                # Clean old entries (older than 5 minutes)
+                expired_keys = [k for k, v in processed_messages_cache.items() if current_time - v > 300]
+                for k in expired_keys:
+                    del processed_messages_cache[k]
+                
+                # Check if already processed
+                if message_key in processed_messages_cache:
+                    return
+                
+                # Mark as processed IMMEDIATELY (claim ownership)
+                processed_messages_cache[message_key] = current_time
 
         try:
             channel_info = client.conversations_info(channel=channel_id)["channel"]
             channel_name = channel_info["name"]
 
-            # Ignore messages from explicitly ignored channels
-            if channel_name in IGNORED_CHANNEL_NAMES:
-                logger.info(f"IGNORING message from explicitly ignored channel: {channel_name}")
-                return
-
-            # Ignore messages from categorized ignored channels
-            if channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
-                logger.info(f"IGNORING message from categorized ignored channel: {channel_name}")
+            # Ignore messages from ignored channels
+            if channel_name in IGNORED_CHANNEL_NAMES or channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
                 return
 
             # Ignore bot messages in non-apptbk channels
             if "bot_id" in event and not channel_name.endswith("-apptbk"):
                 return
 
-            # Only process messages from channels ending with specific suffixes
+            # Only process messages from target channels
             if not (channel_name.endswith("-admin") or
                    channel_name.endswith("-admins") or
                    channel_name.endswith("-agent") or
                    channel_name.endswith("-agents") or
                    channel_name.endswith("-apptbk")):
-                logger.info(f"Ignoring message from non-target channel: {channel_name}")
                 return
 
         except SlackApiError as e:
-            logger.error(f"Error getting channel info: {e.response['error']}")
+            logger.error(f"Channel error [{channel_id}]: {e.response['error']}")
             return
 
         text = event.get("text", "")
-        # Handle both user messages and bot messages
         user = event.get("user") or event.get("bot_id", "unknown")
         timestamp = event["ts"]
         thread_ts = event.get("thread_ts")
         attachments = event.get("attachments", [])
         files = event.get("files", [])
-
-        # Check if this is a thread reply
         is_thread_reply = thread_ts is not None and thread_ts != timestamp
 
-        logger.info(f"[{current_bot_config.name}] ✅ PROCESSING message - Channel: {channel_name} ({channel_id}), Timestamp: {timestamp}, Thread TS: {thread_ts}, Is Thread Reply: {is_thread_reply}, Has Attachments: {bool(attachments)}, Has Files: {bool(files)}")
+        logger.info(f"[{current_bot_config.name}] {channel_name}")
 
         forward_message(
             channel_id=channel_id,
@@ -932,8 +934,6 @@ def handle_message(event, say):
             attachments=attachments,
             files=files
         )
-        
-        logger.info(f"[{current_bot_config.name}] ✅ FORWARDED message from {channel_name}")
     except Exception as e:
         logger.error(f"[{current_bot_config.name}] Error handling message: {str(e)}")
 
@@ -953,62 +953,61 @@ def handle_message_edit(event, say):
             # Fallback: Create deterministic hash from event content
             event_signature = f"{channel_id}:{edited_message.get('user', 'bot')}:{edited_message.get('text', '')[:50]}"
             msg_id = hashlib.md5(event_signature.encode()).hexdigest()[:16]
-            logger.debug(f"[{current_bot_config.name}] Generated fallback ID for edit: {msg_id}")
         
-        message_key = f"{msg_id}:{channel_id}:edit"
+        message_key = f"processed:{msg_id}:{channel_id}:edit"
         
-        # Check for duplicate processing
-        with cache_lock:
-            current_time = time.time()
-            
-            # Check if already processed
-            if message_key in processed_messages_cache:
-                logger.info(f"[{current_bot_config.name}] ⏭️ DUPLICATE edit detected: {msg_id}")
-                return
-            
-            # Mark as processed IMMEDIATELY (claim ownership)
-            processed_messages_cache[message_key] = current_time
-        
-        logger.info(f"[{current_bot_config.name}] ✏️ Processing edit: {msg_id}")
+        # Check for duplicate processing (Redis first, fallback to in-memory)
+        if redis_client:
+            try:
+                # SET NX (set if not exists) with 5-minute expiration - atomic operation!
+                if not redis_client.set(message_key, current_bot_config.bot_id, ex=300, nx=True):
+                    return  # Duplicate edit
+            except Exception as redis_error:
+                logger.error(f"Redis error: {redis_error}")
+                # Fallback to in-memory cache
+                with cache_lock:
+                    if message_key in processed_messages_cache:
+                        return
+                    processed_messages_cache[message_key] = time.time()
+        else:
+            # Use in-memory cache as fallback
+            with cache_lock:
+                current_time = time.time()
+                
+                # Check if already processed
+                if message_key in processed_messages_cache:
+                    return
+                
+                # Mark as processed IMMEDIATELY (claim ownership)
+                processed_messages_cache[message_key] = current_time
 
         try:
             channel_info = client.conversations_info(channel=channel_id)["channel"]
             channel_name = channel_info["name"]
 
-            # Ignore edits from explicitly ignored channels
-            if channel_name in IGNORED_CHANNEL_NAMES:
-                logger.info(f"IGNORING edit from explicitly ignored channel: {channel_name}")
-                return
-
-            # Ignore edits from categorized ignored channels
-            if channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
-                logger.info(f"IGNORING edit from categorized ignored channel: {channel_name}")
+            # Ignore edits from ignored channels
+            if channel_name in IGNORED_CHANNEL_NAMES or channel_name in CHANNEL_CATEGORIZATIONS['ignored_channels']:
                 return
 
             # Ignore bot edits in non-apptbk channels
             if "bot_id" in edited_message and not channel_name.endswith("-apptbk"):
-                logger.info(f"Ignoring bot edit in non-apptbk channel: {channel_name}")
                 return
-
-            logger.info(f"Channel name for edit: {channel_name}")
 
             # Ignore messages from master channels
             if channel_id in [AGENT_MASTER_CHANNEL_ID, APPTBK_MASTER_CHANNEL_ID, 
                             MANAGED_ADMIN_MASTER_CHANNEL_ID, STORM_ADMIN_MASTER_CHANNEL_ID]:
-                logger.info(f"Ignoring message from master channel: {channel_name}")
                 return
 
-            # Only process messages from channels ending with specific suffixes
+            # Only process edits from target channels
             if not (channel_name.endswith("-admin") or
                    channel_name.endswith("-admins") or
                    channel_name.endswith("-agent") or
                    channel_name.endswith("-agents") or
                    channel_name.endswith("-apptbk")):
-                logger.info(f"Ignoring message from non-target channel: {channel_name}")
                 return
 
         except SlackApiError as e:
-            logger.error(f"Error getting channel info for edit: {e.response['error']}")
+            logger.error(f"Channel error [{channel_id}]: {e.response['error']}")
             return
 
         # Get the original message ID
@@ -1022,9 +1021,6 @@ def handle_message_edit(event, say):
                 timestamp=timestamp,
                 message_ts=message_tracker[message_key]
             )
-            logger.info(f"Updated edited message in master channel")
-        else:
-            logger.warning(f"Could not find original message to update: {message_key}")
     except Exception as e:
         logger.error(f"Error handling message edit: {str(e)}")
 
